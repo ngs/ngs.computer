@@ -4,6 +4,7 @@
   --status: #b3ada1;
   --hint: #9a948a;
 }
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #13110f; /* ink (background) */
@@ -12,26 +13,31 @@
     --hint: #6d6960;
   }
 }
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
+
 html,
 body {
   height: 100%;
   overflow: hidden;
   background: var(--paper);
 }
+
 #app {
   position: fixed;
   inset: 0;
   touch-action: none;
   cursor: grab;
 }
+
 #app.dragging {
   cursor: grabbing;
 }
+
 canvas {
   display: block;
 }
@@ -50,6 +56,7 @@ canvas {
   user-select: none;
   transition: opacity 0.6s ease;
 }
+
 .status {
   position: fixed;
   left: 18px;
@@ -61,27 +68,34 @@ canvas {
   pointer-events: none;
   user-select: none;
 }
+
 .status b {
   color: var(--ink);
   font-weight: 600;
 }
+
 .status a {
   color: var(--ink);
   font-weight: 600;
   text-decoration: none;
+
   /* The .status container is pointer-events:none so drags pass through to
      the canvas; re-enable it here so the link itself stays clickable. */
   pointer-events: auto;
 }
+
 .status a svg {
   display: block;
+
   /* The inline SVG has no width/height, so give it a sensible size. */
   height: 1.2em;
   width: auto;
+
   /* currentColor resolves to the anchor's color (var(--ink)), i.e. the
      foreground, and stays theme-aware in dark mode. */
-  fill: currentColor;
+  fill: currentcolor;
 }
+
 @media (prefers-reduced-motion: reduce) {
   .hint {
     transition: none;

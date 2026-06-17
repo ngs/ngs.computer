@@ -2,6 +2,7 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import globals from "globals";
+import eslintConfigPrettier from "eslint-config-prettier/flat";
 
 export default tseslint.config(
   { ignores: ["dist", "node_modules"] },
@@ -35,4 +36,7 @@ export default tseslint.config(
     extends: [js.configs.recommended],
     languageOptions: { globals: globals.node, sourceType: "module" },
   },
+
+  // Must come last: turns off ESLint formatting rules that conflict with Prettier.
+  eslintConfigPrettier,
 );
