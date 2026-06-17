@@ -17,16 +17,17 @@ export default tseslint.config(
     ],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        // Browser sources live in tsconfig.json; Node scripts in tsconfig.node.json.
+        project: ["./tsconfig.json", "./tsconfig.node.json"],
         tsconfigRootDir: import.meta.dirname,
       },
       globals: globals.browser,
     },
   },
 
-  // Vite config runs in Node, not the browser.
+  // The Vite config and build scripts run in Node, not the browser.
   {
-    files: ["vite.config.ts"],
+    files: ["vite.config.ts", "scripts/**/*.ts"],
     languageOptions: { globals: globals.node },
   },
 
