@@ -25,7 +25,9 @@ type Edge = "T" | "R" | "B" | "L";
 // ===== 2) Extract contour lines with Marching Squares =====
 // For each cell configuration -> the pair(s) of edges to connect
 // (midpoints of T:top R:right B:bottom L:left).
-const MS: Record<number, [Edge, Edge][]> = {
+// Partial: indices 0 and 15 (fully-out / fully-in cells) have no segments,
+// so lookups are intentionally `... | undefined`.
+const MS: Partial<Record<number, [Edge, Edge][]>> = {
   1: [["L", "T"]],
   2: [["T", "R"]],
   3: [["L", "R"]],
@@ -118,7 +120,8 @@ export function extractContours(img: ImageData): Contours {
   }
 
   // Key the endpoints, then stitch segments into polylines (loops).
-  const key = (x: number, y: number): string => `${(x * 2) | 0}_${(y * 2) | 0}`;
+  const key = (x: number, y: number): string =>
+    `${String((x * 2) | 0)}_${String((y * 2) | 0)}`;
   const map = new Map<string, number[]>();
   const pushAt = (k: string, i: number): void => {
     const list = map.get(k);

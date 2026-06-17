@@ -25,8 +25,10 @@ import { buildPositions } from "./positions";
 import { rasterizeKanji } from "./rasterize";
 
 // ===== 4) Three.js setup =====
-const app = document.getElementById("app");
-if (!app) throw new Error("#app was not found");
+const appElement = document.getElementById("app");
+if (!appElement) throw new Error("#app was not found");
+// Typed const so the narrowing survives inside the closures below.
+const app: HTMLElement = appElement;
 
 const renderer = new WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -36,7 +38,7 @@ const scene = new Scene();
 
 let camera: OrthographicCamera;
 function makeCamera(): void {
-  const aspect = app!.clientWidth / app!.clientHeight;
+  const aspect = app.clientWidth / app.clientHeight;
   const f = TARGET_SIZE * 1.32;
   camera = new OrthographicCamera(
     (-f * aspect) / 2,
@@ -59,7 +61,8 @@ const lineColor = (): number => (darkMQ.matches ? 0xf3efe6 : 0x13110f); // dark:
 let lineMesh: LineSegments | null = null;
 // Follow the OS dark/light switch.
 darkMQ.addEventListener("change", () => {
-  if (lineMesh) (lineMesh.material as LineBasicMaterial).color.setHex(lineColor());
+  if (lineMesh)
+    (lineMesh.material as LineBasicMaterial).color.setHex(lineColor());
 });
 
 async function buildKanji(): Promise<void> {
@@ -85,8 +88,8 @@ async function buildKanji(): Promise<void> {
 void buildKanji();
 
 function resize(): void {
-  const w = app!.clientWidth;
-  const h = app!.clientHeight;
+  const w = app.clientWidth;
+  const h = app.clientHeight;
   renderer.setSize(w, h);
   const aspect = w / h;
   const f = TARGET_SIZE * 1.32;
@@ -116,9 +119,6 @@ let autoCount = 0;
 let nextSwitch = performance.now() + INTERVAL;
 let lastInteract = -1e9;
 
-const modeEl = document.getElementById("mode");
-const hintEl = document.getElementById("hint");
-
 // Start from a scattered state and converge to the front (= readable text).
 group.quaternion.copy(randomQuat());
 targetQuat.identity();
@@ -139,8 +139,8 @@ app.addEventListener("pointerdown", (e) => {
   dragging = true;
   lastX = e.clientX;
   lastY = e.clientY;
-  app!.classList.add("dragging");
-  app!.setPointerCapture(e.pointerId);
+  app.classList.add("dragging");
+  app.setPointerCapture(e.pointerId);
   interact();
 });
 app.addEventListener("pointermove", (e) => {
@@ -149,14 +149,20 @@ app.addEventListener("pointermove", (e) => {
   const dy = e.clientY - lastY;
   lastX = e.clientX;
   lastY = e.clientY;
-  const qy = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), dx * SPEED);
-  const qx = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), dy * SPEED);
+  const qy = new Quaternion().setFromAxisAngle(
+    new Vector3(0, 1, 0),
+    dx * SPEED,
+  );
+  const qx = new Quaternion().setFromAxisAngle(
+    new Vector3(1, 0, 0),
+    dy * SPEED,
+  );
   group.quaternion.premultiply(qy).premultiply(qx); // rotate in world space
   interact();
 });
 function endDrag(): void {
   dragging = false;
-  app!.classList.remove("dragging");
+  app.classList.remove("dragging");
 }
 app.addEventListener("pointerup", endDrag);
 app.addEventListener("pointercancel", endDrag);
@@ -164,8 +170,6 @@ app.addEventListener("pointercancel", endDrag);
 function interact(): void {
   autoMode = false;
   lastInteract = performance.now();
-  if (modeEl) modeEl.textContent = "manual";
-  if (hintEl) hintEl.style.opacity = "0";
 }
 
 // ===== 6) Loop =====
@@ -176,8 +180,6 @@ function tick(): void {
   if (!autoMode && now - lastInteract > INTERVAL) {
     autoMode = true;
     nextSwitch = now; // pick the next target immediately
-    if (modeEl) modeEl.textContent = "auto";
-    if (hintEl) hintEl.style.opacity = "1";
   }
 
   if (autoMode) {
