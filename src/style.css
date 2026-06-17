@@ -1,0 +1,72 @@
+:root {
+  --paper: #f3efe6; /* washi paper */
+  --ink: #13110f; /* ink */
+  --status: #b3ada1;
+  --hint: #9a948a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #13110f; /* ink (background) */
+    --ink: #f3efe6; /* white (lines) */
+    --status: #6d6960;
+    --hint: #6d6960;
+  }
+}
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+}
+#app {
+  position: fixed;
+  inset: 0;
+  touch-action: none;
+  cursor: grab;
+}
+#app.dragging {
+  cursor: grabbing;
+}
+canvas {
+  display: block;
+}
+
+.hint {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 22px;
+  text-align: center;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--hint);
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.6s ease;
+}
+.status {
+  position: fixed;
+  left: 18px;
+  top: 16px;
+  font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  color: var(--status);
+  pointer-events: none;
+  user-select: none;
+}
+.status b {
+  color: var(--ink);
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hint {
+    transition: none;
+  }
+}
