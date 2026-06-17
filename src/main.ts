@@ -23,6 +23,10 @@ import {
 import { extractContours } from "./marchingSquares";
 import { buildPositions } from "./positions";
 import { rasterizeKanji } from "./rasterize";
+import { mountLogo } from "./logo";
+
+// Replace the status link's "*" placeholder with the inline SVG logo.
+mountLogo();
 
 // ===== 4) Three.js setup =====
 const appElement = document.getElementById("app");
