@@ -30,5 +30,8 @@ export const INTERVAL = 1000;
 /** Every Nth switch, go to the readable front-facing angle. */
 export const REVEAL_EVERY = 3;
 
-/** Angle transition smoothness (0-1). */
-export const SLERP = 0.12;
+/** Auto-mode easing toward the target angle, per frame (0-1). Lower = gentler, longer glide. */
+export const EASE = 0.06;
+
+/** Drag inertia: angular-velocity retention per frame (0-1). Higher = longer glide after release. */
+export const DAMPING = 0.92;

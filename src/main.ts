@@ -13,11 +13,12 @@ import {
   WebGLRenderer,
 } from "three";
 import {
+  DAMPING,
+  EASE,
   FONT_FAMILY,
   INTERVAL,
   KANJI,
   REVEAL_EVERY,
-  SLERP,
   TARGET_SIZE,
 } from "./config";
 import { extractContours } from "./marchingSquares";
@@ -123,7 +124,13 @@ let autoCount = 0;
 let nextSwitch = performance.now() + INTERVAL;
 let lastInteract = -1e9;
 
-// Start from a scattered state and converge to the front (= readable text).
+// World-space angular velocity (radians/frame) carried over from dragging, so
+// releasing keeps a monotonically-decaying glide (no overshoot, no bounce).
+const spin = new Vector3();
+const tmpAxis = new Vector3();
+const tmpQuat = new Quaternion();
+
+// Start from a scattered state and ease toward the front (= readable text).
 group.quaternion.copy(randomQuat());
 targetQuat.identity();
 
@@ -132,6 +139,16 @@ function pickTarget(): void {
   if (autoCount % REVEAL_EVERY === 0)
     targetQuat.identity(); // readable angle
   else targetQuat.copy(randomQuat()); // scattered angle
+}
+
+// Apply the angular velocity to the orientation, then bleed it off (inertia).
+function integrateSpin(): void {
+  const angle = spin.length();
+  if (angle > 1e-6) {
+    tmpAxis.copy(spin).multiplyScalar(1 / angle);
+    group.quaternion.premultiply(tmpQuat.setFromAxisAngle(tmpAxis, angle));
+  }
+  spin.multiplyScalar(DAMPING);
 }
 
 // Drag interaction (shared between mouse and touch).
@@ -162,6 +179,8 @@ app.addEventListener("pointermove", (e) => {
     dy * SPEED,
   );
   group.quaternion.premultiply(qy).premultiply(qx); // rotate in world space
+  // Remember the step as angular velocity, so releasing keeps the momentum.
+  spin.set(dy * SPEED, dx * SPEED, 0);
   interact();
 });
 function endDrag(): void {
@@ -186,12 +205,19 @@ function tick(): void {
     nextSwitch = now; // pick the next target immediately
   }
 
-  if (autoMode) {
-    if (now >= nextSwitch) {
-      pickTarget();
-      nextSwitch = now + INTERVAL;
+  // While dragging, the pointer moves the model directly. Otherwise auto mode
+  // eases toward the target (no overshoot), and a freshly released drag keeps
+  // gliding on its leftover momentum until it decays.
+  if (!dragging) {
+    if (autoMode) {
+      if (now >= nextSwitch) {
+        pickTarget();
+        nextSwitch = now + INTERVAL;
+      }
+      group.quaternion.slerp(targetQuat, EASE); // gentle ease-in, never overshoots
+    } else {
+      integrateSpin(); // post-drag inertia
     }
-    group.quaternion.slerp(targetQuat, SLERP); // smoothly approach the target angle
   }
 
   renderer.render(scene, camera);
