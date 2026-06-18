@@ -18,7 +18,8 @@ import {
   FONT_FAMILY,
   INTERVAL,
   KANJI,
-  REVEAL_EVERY,
+  MIN_RANDOM_BETWEEN,
+  REVEAL_CHANCE,
   TARGET_SIZE,
 } from "./config";
 import { extractContours } from "./marchingSquares";
@@ -110,19 +111,13 @@ resize();
 // ===== 5) Angle control =====
 const targetQuat = new Quaternion(); // target of the auto transition
 function randomQuat(): Quaternion {
-  const ax = new Vector3(
-    Math.random() * 2 - 1,
-    Math.random() * 2 - 1,
-    Math.random() * 2 - 1,
-  ).normalize();
-  const ang = 0.7 + Math.random() * 1.9; // 0.7-2.6 rad = nicely scattered
-  return new Quaternion().setFromAxisAngle(ax, ang);
+  return new Quaternion().random(); // uniformly random orientation
 }
 
 let autoMode = true;
-let autoCount = 0;
 let nextSwitch = performance.now() + INTERVAL;
 let lastInteract = -1e9;
+let sinceReveal = 0; // random angles shown since the last "正体" reveal
 
 // World-space angular velocity (radians/frame) carried over from dragging, so
 // releasing keeps a monotonically-decaying glide (no overshoot, no bounce).
@@ -130,15 +125,19 @@ const spin = new Vector3();
 const tmpAxis = new Vector3();
 const tmpQuat = new Quaternion();
 
-// Start from a scattered state and ease toward the front (= readable text).
+// Start scattered and drift to another random angle (no "正体" reveal on load).
 group.quaternion.copy(randomQuat());
-targetQuat.identity();
+targetQuat.copy(randomQuat());
 
 function pickTarget(): void {
-  autoCount++;
-  if (autoCount % REVEAL_EVERY === 0)
-    targetQuat.identity(); // readable angle
-  else targetQuat.copy(randomQuat()); // scattered angle
+  // Only allow a reveal once enough random angles have passed since the last one.
+  if (sinceReveal >= MIN_RANDOM_BETWEEN && Math.random() < REVEAL_CHANCE) {
+    targetQuat.identity(); // settle on the readable "正体"
+    sinceReveal = 0;
+  } else {
+    targetQuat.copy(randomQuat()); // a fully random orientation
+    sinceReveal++;
+  }
 }
 
 // Apply the angular velocity to the orientation, then bleed it off (inertia).

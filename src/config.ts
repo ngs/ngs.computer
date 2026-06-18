@@ -27,8 +27,11 @@ export const GAP = 2;
 /** Angle switch interval (ms). */
 export const INTERVAL = 1000;
 
-/** Every Nth switch, go to the readable front-facing angle. */
-export const REVEAL_EVERY = 3;
+/** Chance (0-1) that an eligible switch lands on the readable front-facing "正体". */
+export const REVEAL_CHANCE = 0.2;
+
+/** Minimum number of random angles forced between two "正体" reveals. */
+export const MIN_RANDOM_BETWEEN = 3;
 
 /** Auto-mode easing toward the target angle, per frame (0-1). Lower = gentler, longer glide. */
 export const EASE = 0.06;
