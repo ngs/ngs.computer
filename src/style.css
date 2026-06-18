@@ -59,29 +59,27 @@ canvas {
 
 .status {
   position: fixed;
-  left: 18px;
-  top: 16px;
-  font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
-  font-size: 13px;
-  letter-spacing: 0.18em;
-  color: var(--status);
+  left: 0;
+  top: 0;
   pointer-events: none;
   user-select: none;
 }
 
-.status b {
+.status a {
+  /* transform/scale is ignored on inline elements, so make the link a box. */
+  display: inline-block;
+  padding: 16px;
   color: var(--ink);
-  font-weight: 600;
+  pointer-events: auto;
+  opacity: 0.3;
+  transition:
+    opacity 0.2s ease-in-out,
+    scale 0.2s ease-in-out;
 }
 
-.status a {
-  color: var(--ink);
-  font-weight: 600;
-  text-decoration: none;
-
-  /* The .status container is pointer-events:none so drags pass through to
-     the canvas; re-enable it here so the link itself stays clickable. */
-  pointer-events: auto;
+.status a:hover {
+  opacity: 1;
+  scale: 1.2;
 }
 
 .status a svg {
