@@ -33,6 +33,16 @@ export const REVEAL_CHANCE = 0.2;
 /** Minimum number of random angles forced between two "正体" reveals. */
 export const MIN_RANDOM_BETWEEN = 3;
 
+/** Dwell at the readable "正体" as a multiple of INTERVAL (2 = stay twice as long). */
+export const REVEAL_HOLD_MULT = 2;
+
+/** Particle-pattern dot size (screen px, before devicePixelRatio). */
+export const PARTICLE_SIZE_MIN = 0.9; // base dot size
+export const PARTICLE_SIZE_JITTER = 1.2; // random per-dot size variation (set 0 for uniform)
+
+/** Particle flow speed along the contour (sample-steps per second; 0 = static). */
+export const PARTICLE_FLOW_SPEED = 9;
+
 /** Auto-mode easing toward the target angle, per frame (0-1). Lower = gentler, longer glide. */
 export const EASE = 0.06;
 

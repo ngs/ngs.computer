@@ -3,12 +3,15 @@ import "./font.css";
 import {
   BufferAttribute,
   BufferGeometry,
+  Color,
   Group,
   LineBasicMaterial,
   LineSegments,
   OrthographicCamera,
+  Points,
   Quaternion,
   Scene,
+  ShaderMaterial,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -19,11 +22,16 @@ import {
   INTERVAL,
   KANJI,
   MIN_RANDOM_BETWEEN,
+  PARTICLE_FLOW_SPEED,
   REVEAL_CHANCE,
+  REVEAL_HOLD_MULT,
   TARGET_SIZE,
 } from "./config";
+import type { BBox, Loop } from "./marchingSquares";
 import { extractContours } from "./marchingSquares";
-import { buildPositions } from "./positions";
+import type { ParticleField } from "./positions";
+import { buildParticleField, buildPositions } from "./positions";
+import { PATTERNS } from "./patterns";
 import { rasterizeKanji } from "./rasterize";
 import { mountLogo } from "./logo";
 
@@ -64,12 +72,51 @@ scene.add(group);
 
 const darkMQ = window.matchMedia("(prefers-color-scheme: dark)");
 const lineColor = (): number => (darkMQ.matches ? 0xf3efe6 : 0x13110f); // dark:white / light:ink
+
+// Round-dot point material; per-vertex `size` drives the halftone look, and the
+// ortho camera keeps point sizes constant in screen space (so sizes come purely
+// from the attribute, not depth foreshortening).
+const pointMat = new ShaderMaterial({
+  uniforms: {
+    uColor: { value: new Color(lineColor()) },
+    uPixelRatio: { value: renderer.getPixelRatio() },
+  },
+  vertexShader: /* glsl */ `
+    attribute float size;
+    uniform float uPixelRatio;
+    void main() {
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = size * uPixelRatio;
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform vec3 uColor;
+    void main() {
+      vec2 c = gl_PointCoord - vec2(0.5);
+      if (dot(c, c) > 0.25) discard; // clip the square sprite into a disc
+      gl_FragColor = vec4(uColor, 1.0);
+    }
+  `,
+  transparent: true,
+});
+
 let lineMesh: LineSegments | null = null;
+let pointMesh: Points | null = null;
 // Follow the OS dark/light switch.
 darkMQ.addEventListener("change", () => {
-  if (lineMesh)
-    (lineMesh.material as LineBasicMaterial).color.setHex(lineColor());
+  const c = lineColor();
+  if (lineMesh) (lineMesh.material as LineBasicMaterial).color.setHex(c);
+  (pointMat.uniforms.uColor.value as Color).setHex(c);
 });
+
+// Kept around so we can re-scatter into a different pattern without re-rasterizing.
+let contourLoops: Loop[] | null = null;
+let contourBBox: BBox | null = null;
+let patternIndex = 0;
+
+// Active flowing dot field (only while the particle pattern is showing).
+let particleField: ParticleField | null = null;
+let flow = 0; // accumulated flow offset (sample-steps)
 
 async function buildKanji(): Promise<void> {
   // Make sure the requested web-font glyphs are loaded before rasterizing
@@ -84,14 +131,51 @@ async function buildKanji(): Promise<void> {
   const img = rasterizeKanji(KANJI);
   const { loops, bbox } = extractContours(img);
   if (!bbox) return;
-  const positions = buildPositions(loops, bbox);
-  const geo = new BufferGeometry();
-  geo.setAttribute("position", new BufferAttribute(positions, 3));
-  const mat = new LineBasicMaterial({ color: lineColor() });
-  lineMesh = new LineSegments(geo, mat);
-  group.add(lineMesh);
+  contourLoops = loops;
+  contourBBox = bbox;
+
+  lineMesh = new LineSegments(
+    new BufferGeometry(),
+    new LineBasicMaterial({ color: lineColor() }),
+  );
+  pointMesh = new Points(new BufferGeometry(), pointMat);
+  group.add(lineMesh, pointMesh);
+
+  renderPattern(PATTERNS[patternIndex]);
 }
 void buildKanji();
+
+// Rebuild the active geometry for `pattern` and show the matching primitive
+// (line segments or the dot field). Called head-on at "正体", where the ortho
+// view collapses Z, so the swap stays invisible until the glyph tilts away.
+function renderPattern(pattern: (typeof PATTERNS)[number]): void {
+  if (!lineMesh || !pointMesh || !contourLoops || !contourBBox) return;
+  if (pattern.mode === "points") {
+    particleField = buildParticleField(contourLoops, contourBBox, pattern);
+    const geo = pointMesh.geometry;
+    // BufferAttribute wraps the field's array, so per-frame update()s show up.
+    geo.setAttribute(
+      "position",
+      new BufferAttribute(particleField.positions, 3),
+    );
+    geo.setAttribute("size", new BufferAttribute(particleField.sizes, 1));
+  } else {
+    particleField = null;
+    const positions = buildPositions(contourLoops, contourBBox, pattern);
+    lineMesh.geometry.setAttribute(
+      "position",
+      new BufferAttribute(positions, 3),
+    );
+  }
+  lineMesh.visible = pattern.mode !== "points";
+  pointMesh.visible = pattern.mode === "points";
+}
+
+// Advance to the next pattern (one step per "正体" reveal).
+function advancePattern(): void {
+  patternIndex = (patternIndex + 1) % PATTERNS.length;
+  renderPattern(PATTERNS[patternIndex]);
+}
 
 function resize(): void {
   const w = app.clientWidth;
@@ -118,6 +202,7 @@ let autoMode = true;
 let nextSwitch = performance.now() + INTERVAL;
 let lastInteract = -1e9;
 let sinceReveal = 0; // random angles shown since the last "正体" reveal
+let leavingReveal = false; // next switch follows a reveal -> re-scatter on the way out
 
 // World-space angular velocity (radians/frame) carried over from dragging, so
 // releasing keeps a monotonically-decaying glide (no overshoot, no bounce).
@@ -129,15 +214,24 @@ const tmpQuat = new Quaternion();
 group.quaternion.copy(randomQuat());
 targetQuat.copy(randomQuat());
 
-function pickTarget(): void {
+// Returns how long to hold this target before switching again (ms).
+function pickTarget(): number {
+  // Leaving a reveal: break the glyph apart with a fresh pattern as it tilts off.
+  if (leavingReveal) {
+    leavingReveal = false;
+    advancePattern();
+  }
+
   // Only allow a reveal once enough random angles have passed since the last one.
   if (sinceReveal >= MIN_RANDOM_BETWEEN && Math.random() < REVEAL_CHANCE) {
     targetQuat.identity(); // settle on the readable "正体"
     sinceReveal = 0;
-  } else {
-    targetQuat.copy(randomQuat()); // a fully random orientation
-    sinceReveal++;
+    leavingReveal = true; // next switch re-scatters
+    return INTERVAL * REVEAL_HOLD_MULT; // linger longer while it's readable
   }
+  targetQuat.copy(randomQuat()); // a fully random orientation
+  sinceReveal++;
+  return INTERVAL;
 }
 
 // Apply the angular velocity to the orientation, then bleed it off (inertia).
@@ -195,13 +289,23 @@ function interact(): void {
 }
 
 // ===== 6) Loop =====
+let lastFrame = performance.now();
 function tick(): void {
   const now = performance.now();
+  const dt = Math.min(now - lastFrame, 100) / 1000; // seconds, clamped after stalls
+  lastFrame = now;
 
   // Interaction stopped and INTERVAL elapsed -> resume auto (force the next angle).
   if (!autoMode && now - lastInteract > INTERVAL) {
     autoMode = true;
     nextSwitch = now; // pick the next target immediately
+  }
+
+  // Stream the particle dots along their contours while the dot field is showing.
+  if (particleField && pointMesh?.visible) {
+    flow += PARTICLE_FLOW_SPEED * dt;
+    particleField.update(flow);
+    pointMesh.geometry.attributes.position.needsUpdate = true;
   }
 
   // While dragging, the pointer moves the model directly. Otherwise auto mode
@@ -210,8 +314,7 @@ function tick(): void {
   if (!dragging) {
     if (autoMode) {
       if (now >= nextSwitch) {
-        pickTarget();
-        nextSwitch = now + INTERVAL;
+        nextSwitch = now + pickTarget();
       }
       group.quaternion.slerp(targetQuat, EASE); // gentle ease-in, never overshoots
     } else {
