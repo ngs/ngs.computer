@@ -12,6 +12,9 @@ export const FONT_STACK = `${FONT_FAMILY},"Hiragino Mincho ProN","Yu Mincho",ser
 /** Max characters honored from the `?text=` query (guards the canvas/contour cost). */
 export const MAX_TEXT_LENGTH = 24;
 
+/** Size of the `?now=1` clock line relative to the base text (0.5 = half). */
+export const CLOCK_SCALE = 0.5;
+
 /** Approximate glyph size in 3D space. */
 export const TARGET_SIZE = 10;
 

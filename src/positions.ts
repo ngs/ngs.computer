@@ -6,7 +6,7 @@ import {
   TARGET_SIZE,
 } from "./config";
 import type { BBox, Loop } from "./marchingSquares";
-import type { ScatterPattern } from "./patterns";
+import type { ScatterPattern, ZFn } from "./patterns";
 
 // Maps grid-space contour coordinates into centered 3D space.
 function makeMapper(bbox: BBox): {
@@ -30,12 +30,12 @@ export function buildPositions(
   loops: Loop[],
   bbox: BBox,
   pattern: ScatterPattern,
+  z: ZFn = pattern.makeZ(),
 ): Float32Array {
   const { mx, my, half } = makeMapper(bbox);
 
   const chunk = pattern.chunk ?? CHUNK;
   const gap = pattern.gap ?? GAP;
-  const z = pattern.makeZ(); // fresh random arrangement for this build
 
   const pos: number[] = [];
   let i = 0;
@@ -87,6 +87,7 @@ export function buildParticleField(
   loops: Loop[],
   bbox: BBox,
   pattern: ScatterPattern,
+  z: ZFn = pattern.makeZ(),
 ): ParticleField {
   const { mx, my, half } = makeMapper(bbox);
   const step = Math.max(1, pattern.step ?? 2);
@@ -125,10 +126,8 @@ export function buildParticleField(
     sizes[s] = PARTICLE_SIZE_MIN + Math.random() * PARTICLE_SIZE_JITTER;
   }
 
-  // One fresh (but frame-stable) arrangement for this build, so the dots flow
-  // through a fixed depth field instead of re-randomizing every frame.
-  const z = pattern.makeZ();
-
+  // `z` (a fixed, frame-stable arrangement) is supplied by the caller so the
+  // dots flow through a constant depth field and can be reused across rebuilds.
   function update(flow: number): void {
     for (let s = 0; s < count; s++) {
       const slot = slots[s];

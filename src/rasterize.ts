@@ -2,8 +2,16 @@ import { FONT_STACK } from "./config";
 
 const spec = (size: number): string => `900 ${String(size)}px ${FONT_STACK}`;
 
+/** A line of text and its size relative to the base font size. */
+export interface TextLine {
+  text: string;
+  scale: number;
+}
+
 // ===== 1) Draw the text offscreen and grab its pixels =====
-export function rasterizeKanji(text: string): ImageData {
+// Renders one or more lines (each at its own size), shrinking the type so the
+// widest line and the full stack both fit the canvas.
+export function rasterizeKanji(lines: TextLine[]): ImageData {
   const W = 1280;
   const H = 640;
   const cv = document.createElement("canvas");
@@ -17,16 +25,33 @@ export function rasterizeKanji(text: string): ImageData {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  // Shrink the type until it fits the canvas width (longer custom strings).
+  const lineGap = 1.25; // line height as a multiple of each line's font size
   const maxW = W * 0.86;
-  let size = 380;
-  ctx.font = spec(size);
-  const w = ctx.measureText(text).width;
-  if (w > maxW) {
-    size = Math.max(48, Math.floor((size * maxW) / w));
-    ctx.font = spec(size);
-  }
+  const maxH = H * 0.82;
 
-  ctx.fillText(text, W / 2, H / 2);
+  // Per-line width at 1px so we can solve for the base size in one pass.
+  const probe = 100;
+  ctx.font = spec(probe);
+  const unitWidths = lines.map((l) => ctx.measureText(l.text).width / probe);
+
+  const widthDenom = Math.max(
+    ...lines.map((l, i) => unitWidths[i] * l.scale),
+    1e-4,
+  );
+  const scaleSum = lines.reduce((s, l) => s + l.scale, 0);
+  const size = Math.max(
+    40,
+    Math.floor(Math.min(380, maxW / widthDenom, maxH / (lineGap * scaleSum))),
+  );
+
+  const heights = lines.map((l) => size * l.scale * lineGap);
+  const total = heights.reduce((a, b) => a + b, 0);
+  let y = H / 2 - total / 2;
+  lines.forEach((line, i) => {
+    ctx.font = spec(size * line.scale);
+    ctx.fillText(line.text, W / 2, y + heights[i] / 2);
+    y += heights[i];
+  });
+
   return ctx.getImageData(0, 0, W, H);
 }

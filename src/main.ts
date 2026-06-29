@@ -18,6 +18,7 @@ import {
 import {
   DAMPING,
   EASE,
+  CLOCK_SCALE,
   FONT_FAMILY,
   INTERVAL,
   KANJI,
@@ -36,18 +37,42 @@ import { extractContours } from "./marchingSquares";
 import { loadRemoteFont } from "./loadFont";
 import type { ParticleField } from "./positions";
 import { buildParticleField, buildPositions } from "./positions";
+import type { ZFn } from "./patterns";
 import { PATTERNS } from "./patterns";
+import type { TextLine } from "./rasterize";
 import { rasterizeKanji } from "./rasterize";
 import { mountLogo } from "./logo";
 
-// The string to render: `?text=` overrides the default, capped in length.
-function resolveText(): string {
-  const raw = new URLSearchParams(location.search).get("text");
+const params = new URLSearchParams(location.search);
+
+// Base string to render: `?text=` overrides the default, capped in length.
+function resolveBaseText(): string {
+  const raw = params.get("text");
   if (!raw) return KANJI;
   const text = Array.from(raw.trim()).slice(0, MAX_TEXT_LENGTH).join("");
   return text || KANJI;
 }
-const renderText = resolveText();
+const baseText = resolveBaseText();
+
+// `?now=1` appends a live, second-resolution clock on a new line.
+const showClock = params.has("now") && params.get("now") !== "0";
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+function nowString(): string {
+  const d = new Date();
+  const date = `${String(d.getFullYear())}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  return `${date} ${time}`;
+}
+
+// The lines to rasterize right now (base, plus the smaller clock line if on).
+function currentLines(): TextLine[] {
+  const lines: TextLine[] = [{ text: baseText, scale: 1 }];
+  if (showClock) lines.push({ text: nowString(), scale: CLOCK_SCALE });
+  return lines;
+}
 
 // Replace the status link's "*" placeholder with the inline SVG logo.
 mountLogo();
@@ -148,6 +173,11 @@ let patternIndex = Math.floor(Math.random() * PATTERNS.length);
 let particleField: ParticleField | null = null;
 let flow = 0; // accumulated flow offset (sample-steps)
 
+// The depth arrangement currently in use for each primitive. Reused across
+// clock rebuilds so only the glyphs change, not the scatter layout.
+let lineZ: ZFn | null = null;
+let dotsZ: ZFn | null = null;
+
 // Front→front morph: the current breakup explodes into a cloud, swaps primitive
 // at peak chaos (hiding the line↔dot geometry change), then reassembles.
 interface BurstLayer {
@@ -199,48 +229,78 @@ function makeBurstLayer(
   };
 }
 
+// Digits and separators the clock needs beyond the base text.
+const CLOCK_GLYPHS = "0123456789-: ";
+
 async function buildKanji(): Promise<void> {
   // Make sure the requested web-font glyphs are loaded before rasterizing
   // (otherwise it bakes in whatever fallback font is loaded at that moment).
-  // The bundled subset only covers the default text, so custom strings fetch
-  // their glyphs on demand.
-  if (renderText === KANJI) {
+  // The bundled subset only covers the default text; custom strings and the
+  // clock's digits fetch their glyphs on demand.
+  const needsRemote = baseText !== KANJI || showClock;
+  if (needsRemote) {
+    await loadRemoteFont(baseText + (showClock ? CLOCK_GLYPHS : ""));
+  } else {
     try {
-      await document.fonts.load(`900 380px ${FONT_FAMILY}`, renderText);
+      await document.fonts.load(`900 380px ${FONT_FAMILY}`, baseText);
       await document.fonts.ready;
     } catch {
       /* fall back to a system font on failure */
     }
-  } else {
-    await loadRemoteFont(renderText);
   }
 
-  const img = rasterizeKanji(renderText);
-  const { loops, bbox } = extractContours(img);
-  if (!bbox) return;
-  contourLoops = loops;
-  contourBBox = bbox;
+  if (!rebuildContours()) return;
 
   lineMesh = new LineSegments(new BufferGeometry(), lineMat);
   pointMesh = new Points(new BufferGeometry(), pointMat);
   group.add(lineMesh, pointMesh);
 
   showPattern(PATTERNS[patternIndex]);
+  if (showClock) setInterval(tickClock, 1000);
 }
 void buildKanji();
 
-// Build the line geometry for a scatter pattern into lineMesh.
-function buildScatter(pattern: (typeof PATTERNS)[number]): void {
+// Re-rasterize the current text and refresh the cached contours. Returns false
+// if nothing was drawn (e.g. all-whitespace).
+function rebuildContours(): boolean {
+  const img = rasterizeKanji(currentLines());
+  const { loops, bbox } = extractContours(img);
+  if (!bbox) return false;
+  contourLoops = loops;
+  contourBBox = bbox;
+  return true;
+}
+
+// Once a second, rebuild the geometry from the new time, reusing the active
+// depth arrangement so only the digits change (no re-scatter). Skipped mid-morph.
+function tickClock(): void {
+  if (morphActive || !rebuildContours()) return;
+  const pattern = PATTERNS[patternIndex];
+  if (showingPoints && dotsZ) {
+    buildDots(pattern, dotsZ, false);
+    particleField?.update(flow); // keep the flow position across the rebuild
+    if (pointMesh) pointMesh.geometry.attributes.position.needsUpdate = true;
+  } else if (lineZ) {
+    buildScatter(pattern, lineZ);
+  }
+}
+
+// Build the line geometry for a scatter pattern into lineMesh, using arrangement `z`.
+function buildScatter(pattern: (typeof PATTERNS)[number], z: ZFn): void {
   if (!lineMesh || !contourLoops || !contourBBox) return;
-  const positions = buildPositions(contourLoops, contourBBox, pattern);
+  const positions = buildPositions(contourLoops, contourBBox, pattern, z);
   lineMesh.geometry.setAttribute("position", new BufferAttribute(positions, 3));
 }
 
-// Build the flowing dot field into pointMesh (resets the flow to the start).
-function buildDots(pattern: (typeof PATTERNS)[number]): void {
+// Build the flowing dot field into pointMesh, using arrangement `z`.
+function buildDots(
+  pattern: (typeof PATTERNS)[number],
+  z: ZFn,
+  resetFlow = true,
+): void {
   if (!pointMesh || !contourLoops || !contourBBox) return;
-  flow = 0;
-  particleField = buildParticleField(contourLoops, contourBBox, pattern);
+  if (resetFlow) flow = 0;
+  particleField = buildParticleField(contourLoops, contourBBox, pattern, z);
   const geo = pointMesh.geometry;
   // BufferAttribute wraps the field's array, so per-frame update()s show up.
   geo.setAttribute("position", new BufferAttribute(particleField.positions, 3));
@@ -255,9 +315,11 @@ function showPattern(pattern: (typeof PATTERNS)[number]): void {
   morphTo = null;
   const toPoints = pattern.mode === "points";
   if (toPoints) {
-    buildDots(pattern);
+    dotsZ = pattern.makeZ();
+    buildDots(pattern, dotsZ);
   } else {
-    buildScatter(pattern);
+    lineZ = pattern.makeZ();
+    buildScatter(pattern, lineZ);
     particleField = null;
   }
   lineMat.opacity = 1;
@@ -291,7 +353,8 @@ function startMorph(pattern: (typeof PATTERNS)[number]): void {
 
   // TO = the next breakup; for dots, live IS the field buffer so flow resumes.
   if (toPoints) {
-    buildDots(pattern);
+    dotsZ = pattern.makeZ();
+    buildDots(pattern, dotsZ);
     const field = particleField;
     if (!field) return;
     morphTo = makeBurstLayer(
@@ -300,7 +363,8 @@ function startMorph(pattern: (typeof PATTERNS)[number]): void {
       field.positions,
     );
   } else {
-    const positions = buildPositions(contourLoops, contourBBox, pattern);
+    lineZ = pattern.makeZ();
+    const positions = buildPositions(contourLoops, contourBBox, pattern, lineZ);
     morphTo = makeBurstLayer(positions, false);
   }
 
