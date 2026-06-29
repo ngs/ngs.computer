@@ -22,6 +22,7 @@ import {
   INTERVAL,
   KANJI,
   MIN_RANDOM_BETWEEN,
+  MORPH_BURST,
   MORPH_DURATION,
   MORPH_SETTLE,
   PARTICLE_FLOW_SPEED,
@@ -75,7 +76,7 @@ scene.add(group);
 const darkMQ = window.matchMedia("(prefers-color-scheme: dark)");
 const lineColor = (): number => (darkMQ.matches ? 0xf3efe6 : 0x13110f); // dark:white / light:ink
 
-// Transparent so it can cross-fade against the dot field during a morph.
+// Transparent so it can fade through alpha 0 at a morph's swap point.
 const lineMat = new LineBasicMaterial({
   color: lineColor(),
   transparent: true,
@@ -83,12 +84,13 @@ const lineMat = new LineBasicMaterial({
 
 // Round-dot point material; per-vertex `size` drives the halftone look, and the
 // ortho camera keeps point sizes constant in screen space (so sizes come purely
-// from the attribute, not depth foreshortening). `uOpacity` drives the morph fade.
+// from the attribute, not depth foreshortening). `uAlpha` fades the dots in/out
+// during a morph (0 at the swap point, 1 when settled).
 const pointMat = new ShaderMaterial({
   uniforms: {
     uColor: { value: new Color(lineColor()) },
     uPixelRatio: { value: renderer.getPixelRatio() },
-    uOpacity: { value: 1 },
+    uAlpha: { value: 1 },
   },
   vertexShader: /* glsl */ `
     attribute float size;
@@ -100,15 +102,21 @@ const pointMat = new ShaderMaterial({
   `,
   fragmentShader: /* glsl */ `
     uniform vec3 uColor;
-    uniform float uOpacity;
+    uniform float uAlpha;
     void main() {
       vec2 c = gl_PointCoord - vec2(0.5);
       if (dot(c, c) > 0.25) discard; // clip the square sprite into a disc
-      gl_FragColor = vec4(uColor, uOpacity);
+      gl_FragColor = vec4(uColor, uAlpha);
     }
   `,
   transparent: true,
 });
+
+// Set a primitive's opacity (line uses material.opacity, dots use uAlpha).
+function setMorphAlpha(isPoints: boolean, a: number): void {
+  if (isPoints) pointMat.uniforms.uAlpha.value = a;
+  else lineMat.opacity = a;
+}
 
 let lineMesh: LineSegments | null = null;
 let pointMesh: Points | null = null;
@@ -129,10 +137,56 @@ let patternIndex = Math.floor(Math.random() * PATTERNS.length);
 let particleField: ParticleField | null = null;
 let flow = 0; // accumulated flow offset (sample-steps)
 
-// Front→front morph (cross-fade between line breakup and dot field).
+// Front→front morph: the current breakup explodes into a cloud, swaps primitive
+// at peak chaos (hiding the line↔dot geometry change), then reassembles.
+interface BurstLayer {
+  isPoints: boolean;
+  base: Float32Array; // readable positions (burst == 0)
+  dirs: Float32Array; // per-vertex outward offset in the screen plane
+  live: Float32Array; // the array bound to the mesh
+  apply(burst: number): void;
+}
 let morphActive = false;
 let morphStart = 0;
-let morphToPoints = false; // true: lines -> dots, false: dots -> lines
+let morphSwapped = false; // crossed the midpoint primitive swap yet?
+let morphFrom: BurstLayer | null = null; // explodes outward (first half)
+let morphTo: BurstLayer | null = null; // reassembles (second half)
+let showingPoints = false; // which primitive is the current steady display
+
+// A vertex buffer that bursts outward along fixed random directions and back.
+function makeBurstLayer(
+  base: Float32Array,
+  isPoints: boolean,
+  live?: Float32Array,
+): BurstLayer {
+  const n = base.length / 3;
+  const dirs = new Float32Array(base.length);
+  // Line vertices come in segment pairs; move both endpoints together so each
+  // fragment flies out intact instead of stretching into a streak.
+  const stride = isPoints ? 1 : 2;
+  for (let i = 0; i < n; i += stride) {
+    const a = Math.random() * Math.PI * 2;
+    const r = (0.35 + Math.random() * 0.65) * MORPH_BURST;
+    const dx = Math.cos(a) * r;
+    const dy = Math.sin(a) * r;
+    for (let j = 0; j < stride && i + j < n; j++) {
+      dirs[(i + j) * 3] = dx;
+      dirs[(i + j) * 3 + 1] = dy; // z stays 0 — burst in the head-on plane
+    }
+  }
+  const target = live ?? new Float32Array(base);
+  return {
+    isPoints,
+    base,
+    dirs,
+    live: target,
+    apply(burst: number): void {
+      for (let k = 0; k < base.length; k++) {
+        target[k] = base[k] + dirs[k] * burst;
+      }
+    },
+  };
+}
 
 async function buildKanji(): Promise<void> {
   // Make sure the requested web-font glyphs are loaded before rasterizing
@@ -154,59 +208,97 @@ async function buildKanji(): Promise<void> {
   pointMesh = new Points(new BufferGeometry(), pointMat);
   group.add(lineMesh, pointMesh);
 
-  applyPattern(PATTERNS[patternIndex], false);
+  showPattern(PATTERNS[patternIndex]);
 }
 void buildKanji();
 
-// Build the geometry for `pattern` into its primitive's mesh. When `animate`,
-// keep the outgoing primitive visible and let tick() cross-fade them at the
-// front (line outline <-> dot field); otherwise switch instantly.
-function applyPattern(
-  pattern: (typeof PATTERNS)[number],
-  animate: boolean,
-): void {
+// Build the line geometry for a scatter pattern into lineMesh.
+function buildScatter(pattern: (typeof PATTERNS)[number]): void {
+  if (!lineMesh || !contourLoops || !contourBBox) return;
+  const positions = buildPositions(contourLoops, contourBBox, pattern);
+  lineMesh.geometry.setAttribute("position", new BufferAttribute(positions, 3));
+}
+
+// Build the flowing dot field into pointMesh (resets the flow to the start).
+function buildDots(pattern: (typeof PATTERNS)[number]): void {
+  if (!pointMesh || !contourLoops || !contourBBox) return;
+  flow = 0;
+  particleField = buildParticleField(contourLoops, contourBBox, pattern);
+  const geo = pointMesh.geometry;
+  // BufferAttribute wraps the field's array, so per-frame update()s show up.
+  geo.setAttribute("position", new BufferAttribute(particleField.positions, 3));
+  geo.setAttribute("size", new BufferAttribute(particleField.sizes, 1));
+}
+
+// Switch to `pattern` instantly (used on load and to settle after a morph).
+function showPattern(pattern: (typeof PATTERNS)[number]): void {
+  if (!lineMesh || !pointMesh) return;
+  morphActive = false;
+  morphFrom = null;
+  morphTo = null;
+  const toPoints = pattern.mode === "points";
+  if (toPoints) {
+    buildDots(pattern);
+  } else {
+    buildScatter(pattern);
+    particleField = null;
+  }
+  lineMat.opacity = 1;
+  pointMat.uniforms.uAlpha.value = 1;
+  showingPoints = toPoints;
+  lineMesh.visible = !toPoints;
+  pointMesh.visible = toPoints;
+}
+
+// Start a front→front morph into `pattern`: the current breakup bursts into a
+// cloud, the primitive is swapped at peak chaos, then the new one reassembles.
+function startMorph(pattern: (typeof PATTERNS)[number]): void {
   if (!lineMesh || !pointMesh || !contourLoops || !contourBBox) return;
   const toPoints = pattern.mode === "points";
 
-  // Rebuild only the incoming primitive — the outgoing one keeps its geometry
-  // (and the dot field keeps flowing) so it can fade out cleanly.
-  if (toPoints) {
-    particleField = buildParticleField(contourLoops, contourBBox, pattern);
-    const geo = pointMesh.geometry;
-    // BufferAttribute wraps the field's array, so per-frame update()s show up.
-    geo.setAttribute(
+  // FROM = whatever is showing now; capture its current positions to burst out.
+  if (showingPoints && particleField) {
+    morphFrom = makeBurstLayer(new Float32Array(particleField.positions), true);
+    pointMesh.geometry.setAttribute(
       "position",
-      new BufferAttribute(particleField.positions, 3),
+      new BufferAttribute(morphFrom.live, 3),
     );
-    geo.setAttribute("size", new BufferAttribute(particleField.sizes, 1));
   } else {
-    const positions = buildPositions(contourLoops, contourBBox, pattern);
+    const arr = lineMesh.geometry.attributes.position.array as Float32Array;
+    morphFrom = makeBurstLayer(new Float32Array(arr), false);
     lineMesh.geometry.setAttribute(
       "position",
-      new BufferAttribute(positions, 3),
+      new BufferAttribute(morphFrom.live, 3),
     );
   }
 
-  if (animate) {
-    lineMesh.visible = true;
-    pointMesh.visible = true;
-    morphToPoints = toPoints;
-    morphStart = performance.now();
-    morphActive = true;
+  // TO = the next breakup; for dots, live IS the field buffer so flow resumes.
+  if (toPoints) {
+    buildDots(pattern);
+    const field = particleField;
+    if (!field) return;
+    morphTo = makeBurstLayer(
+      new Float32Array(field.positions),
+      true,
+      field.positions,
+    );
   } else {
-    morphActive = false;
-    lineMesh.visible = !toPoints;
-    pointMesh.visible = toPoints;
-    lineMat.opacity = toPoints ? 0 : 1;
-    pointMat.uniforms.uOpacity.value = toPoints ? 1 : 0;
-    if (!toPoints) particleField = null;
+    const positions = buildPositions(contourLoops, contourBBox, pattern);
+    morphTo = makeBurstLayer(positions, false);
   }
+
+  lineMesh.visible = !morphFrom.isPoints;
+  pointMesh.visible = morphFrom.isPoints;
+  setMorphAlpha(morphFrom.isPoints, 1); // FROM starts fully opaque
+  morphSwapped = false;
+  morphStart = performance.now();
+  morphActive = true;
 }
 
-// Cross-fade into the next pattern, staying head-on (one step per "正体" reveal).
+// Morph into the next pattern, staying head-on (one step per "正体" reveal).
 function advancePattern(): void {
   patternIndex = (patternIndex + 1) % PATTERNS.length;
-  applyPattern(PATTERNS[patternIndex], true);
+  startMorph(PATTERNS[patternIndex]);
 }
 
 function resize(): void {
@@ -336,27 +428,54 @@ function tick(): void {
     nextSwitch = now; // pick the next target immediately
   }
 
-  // Stream the particle dots along their contours while the dot field is showing.
-  if (particleField && pointMesh?.visible) {
+  // Stream the dots along their contours (frozen during a morph so the
+  // splitting line can track them).
+  if (particleField && pointMesh?.visible && !morphActive) {
     flow += PARTICLE_FLOW_SPEED * dt;
     particleField.update(flow);
     pointMesh.geometry.attributes.position.needsUpdate = true;
   }
 
-  // Cross-fade the line outline and the dot field during a front→front morph.
-  if (morphActive && lineMesh && pointMesh) {
+  // Front→front morph: burst the FROM breakup outward, swap primitive at peak
+  // chaos, then reassemble the TO breakup. The swap hides the line↔dot change.
+  if (morphActive && lineMesh && pointMesh && morphFrom && morphTo) {
     const t = Math.min(1, (now - morphStart) / MORPH_DURATION);
     const e = t * t * (3 - 2 * t); // smoothstep
-    lineMat.opacity = morphToPoints ? 1 - e : e;
-    pointMat.uniforms.uOpacity.value = morphToPoints ? e : 1 - e;
+    const burst = Math.sin(Math.PI * e); // 0 at the ends, 1 at the midpoint
+    if (e < 0.5) {
+      // FROM bursts apart and fades to alpha 0 by the midpoint.
+      morphFrom.apply(burst);
+      const m = morphFrom.isPoints ? pointMesh : lineMesh;
+      m.geometry.attributes.position.needsUpdate = true;
+      setMorphAlpha(morphFrom.isPoints, 1 - e / 0.5);
+    } else {
+      // Swap the primitive while fully transparent, then fade TO back in.
+      if (!morphSwapped) {
+        morphSwapped = true;
+        setMorphAlpha(morphFrom.isPoints, 0);
+        const toMesh = morphTo.isPoints ? pointMesh : lineMesh;
+        toMesh.geometry.setAttribute(
+          "position",
+          new BufferAttribute(morphTo.live, 3),
+        );
+        lineMesh.visible = !morphTo.isPoints;
+        pointMesh.visible = morphTo.isPoints;
+      }
+      morphTo.apply(burst);
+      const m = morphTo.isPoints ? pointMesh : lineMesh;
+      m.geometry.attributes.position.needsUpdate = true;
+      setMorphAlpha(morphTo.isPoints, (e - 0.5) / 0.5);
+    }
     if (t >= 1) {
       morphActive = false;
-      if (morphToPoints) {
-        lineMesh.visible = false; // fully a dot field now
-      } else {
-        pointMesh.visible = false; // back to lines; stop the dot flow
-        particleField = null;
-      }
+      showingPoints = morphTo.isPoints;
+      lineMesh.visible = !morphTo.isPoints;
+      pointMesh.visible = morphTo.isPoints;
+      lineMat.opacity = 1;
+      pointMat.uniforms.uAlpha.value = 1;
+      if (!morphTo.isPoints) particleField = null; // back to lines: stop the flow
+      morphFrom = null;
+      morphTo = null;
     }
   }
 

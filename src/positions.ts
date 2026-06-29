@@ -35,6 +35,7 @@ export function buildPositions(
 
   const chunk = pattern.chunk ?? CHUNK;
   const gap = pattern.gap ?? GAP;
+  const z = pattern.makeZ(); // fresh random arrangement for this build
 
   const pos: number[] = [];
   let i = 0;
@@ -54,12 +55,12 @@ export function buildPositions(
       const nx = sx / n / half;
       const ny = sy / n / half;
       const r = Math.min(1, Math.hypot(nx, ny));
-      const z = pattern.z({ nx, ny, r, i });
+      const zv = z({ nx, ny, r, i });
 
       for (let t = k; t < end; t++) {
         const A = poly[t];
         const B = poly[t + 1];
-        pos.push(mx(A[0]), my(A[1]), z, mx(B[0]), my(B[1]), z);
+        pos.push(mx(A[0]), my(A[1]), zv, mx(B[0]), my(B[1]), zv);
       }
       k = end + gap; // leave a gap before the next line (no shared endpoints)
       i++;
@@ -124,6 +125,10 @@ export function buildParticleField(
     sizes[s] = PARTICLE_SIZE_MIN + Math.random() * PARTICLE_SIZE_JITTER;
   }
 
+  // One fresh (but frame-stable) arrangement for this build, so the dots flow
+  // through a fixed depth field instead of re-randomizing every frame.
+  const z = pattern.makeZ();
+
   function update(flow: number): void {
     for (let s = 0; s < count; s++) {
       const slot = slots[s];
@@ -139,11 +144,10 @@ export function buildParticleField(
       const nx = x / half;
       const ny = y / half;
       const r = Math.min(1, Math.hypot(nx, ny));
-      const z = pattern.z({ nx, ny, r, i: s });
       const o = s * 3;
       positions[o] = x;
       positions[o + 1] = y;
-      positions[o + 2] = z;
+      positions[o + 2] = z({ nx, ny, r, i: s });
     }
   }
 

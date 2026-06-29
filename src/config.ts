@@ -36,11 +36,14 @@ export const MIN_RANDOM_BETWEEN = 3;
 /** Dwell at the readable "正体" as a multiple of INTERVAL (2 = stay twice as long). */
 export const REVEAL_HOLD_MULT = 2;
 
-/** Front-to-front cross-fade time when morphing into the next breakup (ms). */
-export const MORPH_DURATION = 1000;
+/** Front-to-front morph time when exploding/reassembling into the next breakup (ms). */
+export const MORPH_DURATION = 300;
 
 /** Extra still time held at the front after a morph, showing the new pattern (ms). */
 export const MORPH_SETTLE = 500;
+
+/** Peak outward burst (world units) at the midpoint of a morph (0 = no scatter). */
+export const MORPH_BURST = 0.5;
 
 /** Particle-pattern dot size (screen px, before devicePixelRatio). */
 export const PARTICLE_SIZE_MIN = 0.9; // base dot size
