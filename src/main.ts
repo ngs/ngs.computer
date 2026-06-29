@@ -496,12 +496,74 @@ function interact(): void {
   lastInteract = performance.now();
 }
 
+// ===== Debug overlay (toggle with "?") =====
+let debugVisible = false;
+let debugEl: HTMLDivElement | null = null;
+let fpsSmooth = 0;
+
+function ensureDebugEl(): HTMLDivElement {
+  if (debugEl) return debugEl;
+  const el = document.createElement("div");
+  el.style.cssText = [
+    "position:fixed",
+    "top:8px",
+    "left:8px",
+    "z-index:10",
+    "margin:0",
+    "padding:8px 10px",
+    "font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace",
+    "white-space:pre",
+    "color:#f3efe6",
+    "background:rgba(19,17,15,0.82)",
+    "border-radius:6px",
+    "pointer-events:none",
+    "user-select:none",
+  ].join(";");
+  document.body.appendChild(el);
+  debugEl = el;
+  return el;
+}
+
+function updateDebug(now: number): void {
+  const el = ensureDebugEl();
+  const p = PATTERNS[patternIndex];
+  const dots = pointMesh?.visible ? (particleField?.count ?? 0) : 0;
+  const lineVerts = lineMesh?.visible
+    ? lineMesh.geometry.attributes.position.count
+    : 0;
+  const morph = morphActive
+    ? `${morphFrom?.isPoints ? "dots" : "line"}→${morphTo?.isPoints ? "dots" : "line"} ${String(Math.round(Math.min(1, (now - morphStart) / MORPH_DURATION) * 100))}%`
+    : "—";
+  const revealIn = autoMode
+    ? `${Math.max(0, (nextSwitch - now) / 1000).toFixed(1)}s`
+    : "—";
+  el.textContent = [
+    `fps    ${String(Math.round(fpsSmooth))}`,
+    `text   ${baseText}${showClock ? "  +clock" : ""}`,
+    `mode   ${showingPoints ? "dots" : "line"}  (${p.name})`,
+    `morph  ${morph}`,
+    `dots   ${String(dots)}`,
+    `line   ${String(lineVerts)} verts`,
+    `flow   ${flow.toFixed(1)}`,
+    `auto   ${autoMode ? "on" : "off"}  reveal-in ${revealIn}`,
+    `since  ${String(sinceReveal)} / ${String(MIN_RANDOM_BETWEEN)}`,
+    `view   dpr ${String(renderer.getPixelRatio())}  ${String(app.clientWidth)}×${String(app.clientHeight)}`,
+  ].join("\n");
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "?") return;
+  debugVisible = !debugVisible;
+  if (debugEl) debugEl.style.display = debugVisible ? "block" : "none";
+});
+
 // ===== 6) Loop =====
 let lastFrame = performance.now();
 function tick(): void {
   const now = performance.now();
   const dt = Math.min(now - lastFrame, 100) / 1000; // seconds, clamped after stalls
   lastFrame = now;
+  if (dt > 0) fpsSmooth = fpsSmooth ? fpsSmooth * 0.9 + (1 / dt) * 0.1 : 1 / dt;
 
   // Interaction stopped and INTERVAL elapsed -> resume auto (force the next angle).
   if (!autoMode && now - lastInteract > INTERVAL) {
@@ -573,6 +635,8 @@ function tick(): void {
       integrateSpin(); // post-drag inertia
     }
   }
+
+  if (debugVisible) updateDebug(now);
 
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
