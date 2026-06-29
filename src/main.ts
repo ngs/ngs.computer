@@ -22,6 +22,8 @@ import {
   INTERVAL,
   KANJI,
   MIN_RANDOM_BETWEEN,
+  MORPH_DURATION,
+  MORPH_SETTLE,
   PARTICLE_FLOW_SPEED,
   REVEAL_CHANCE,
   REVEAL_HOLD_MULT,
@@ -73,13 +75,20 @@ scene.add(group);
 const darkMQ = window.matchMedia("(prefers-color-scheme: dark)");
 const lineColor = (): number => (darkMQ.matches ? 0xf3efe6 : 0x13110f); // dark:white / light:ink
 
+// Transparent so it can cross-fade against the dot field during a morph.
+const lineMat = new LineBasicMaterial({
+  color: lineColor(),
+  transparent: true,
+});
+
 // Round-dot point material; per-vertex `size` drives the halftone look, and the
 // ortho camera keeps point sizes constant in screen space (so sizes come purely
-// from the attribute, not depth foreshortening).
+// from the attribute, not depth foreshortening). `uOpacity` drives the morph fade.
 const pointMat = new ShaderMaterial({
   uniforms: {
     uColor: { value: new Color(lineColor()) },
     uPixelRatio: { value: renderer.getPixelRatio() },
+    uOpacity: { value: 1 },
   },
   vertexShader: /* glsl */ `
     attribute float size;
@@ -91,10 +100,11 @@ const pointMat = new ShaderMaterial({
   `,
   fragmentShader: /* glsl */ `
     uniform vec3 uColor;
+    uniform float uOpacity;
     void main() {
       vec2 c = gl_PointCoord - vec2(0.5);
       if (dot(c, c) > 0.25) discard; // clip the square sprite into a disc
-      gl_FragColor = vec4(uColor, 1.0);
+      gl_FragColor = vec4(uColor, uOpacity);
     }
   `,
   transparent: true,
@@ -105,18 +115,24 @@ let pointMesh: Points | null = null;
 // Follow the OS dark/light switch.
 darkMQ.addEventListener("change", () => {
   const c = lineColor();
-  if (lineMesh) (lineMesh.material as LineBasicMaterial).color.setHex(c);
+  lineMat.color.setHex(c);
   (pointMat.uniforms.uColor.value as Color).setHex(c);
 });
 
 // Kept around so we can re-scatter into a different pattern without re-rasterizing.
 let contourLoops: Loop[] | null = null;
 let contourBBox: BBox | null = null;
-let patternIndex = 0;
+// Randomize which breakup shows first; it alternates from there on each reveal.
+let patternIndex = Math.floor(Math.random() * PATTERNS.length);
 
 // Active flowing dot field (only while the particle pattern is showing).
 let particleField: ParticleField | null = null;
 let flow = 0; // accumulated flow offset (sample-steps)
+
+// Front→front morph (cross-fade between line breakup and dot field).
+let morphActive = false;
+let morphStart = 0;
+let morphToPoints = false; // true: lines -> dots, false: dots -> lines
 
 async function buildKanji(): Promise<void> {
   // Make sure the requested web-font glyphs are loaded before rasterizing
@@ -134,23 +150,27 @@ async function buildKanji(): Promise<void> {
   contourLoops = loops;
   contourBBox = bbox;
 
-  lineMesh = new LineSegments(
-    new BufferGeometry(),
-    new LineBasicMaterial({ color: lineColor() }),
-  );
+  lineMesh = new LineSegments(new BufferGeometry(), lineMat);
   pointMesh = new Points(new BufferGeometry(), pointMat);
   group.add(lineMesh, pointMesh);
 
-  renderPattern(PATTERNS[patternIndex]);
+  applyPattern(PATTERNS[patternIndex], false);
 }
 void buildKanji();
 
-// Rebuild the active geometry for `pattern` and show the matching primitive
-// (line segments or the dot field). Called head-on at "正体", where the ortho
-// view collapses Z, so the swap stays invisible until the glyph tilts away.
-function renderPattern(pattern: (typeof PATTERNS)[number]): void {
+// Build the geometry for `pattern` into its primitive's mesh. When `animate`,
+// keep the outgoing primitive visible and let tick() cross-fade them at the
+// front (line outline <-> dot field); otherwise switch instantly.
+function applyPattern(
+  pattern: (typeof PATTERNS)[number],
+  animate: boolean,
+): void {
   if (!lineMesh || !pointMesh || !contourLoops || !contourBBox) return;
-  if (pattern.mode === "points") {
+  const toPoints = pattern.mode === "points";
+
+  // Rebuild only the incoming primitive — the outgoing one keeps its geometry
+  // (and the dot field keeps flowing) so it can fade out cleanly.
+  if (toPoints) {
     particleField = buildParticleField(contourLoops, contourBBox, pattern);
     const geo = pointMesh.geometry;
     // BufferAttribute wraps the field's array, so per-frame update()s show up.
@@ -160,21 +180,33 @@ function renderPattern(pattern: (typeof PATTERNS)[number]): void {
     );
     geo.setAttribute("size", new BufferAttribute(particleField.sizes, 1));
   } else {
-    particleField = null;
     const positions = buildPositions(contourLoops, contourBBox, pattern);
     lineMesh.geometry.setAttribute(
       "position",
       new BufferAttribute(positions, 3),
     );
   }
-  lineMesh.visible = pattern.mode !== "points";
-  pointMesh.visible = pattern.mode === "points";
+
+  if (animate) {
+    lineMesh.visible = true;
+    pointMesh.visible = true;
+    morphToPoints = toPoints;
+    morphStart = performance.now();
+    morphActive = true;
+  } else {
+    morphActive = false;
+    lineMesh.visible = !toPoints;
+    pointMesh.visible = toPoints;
+    lineMat.opacity = toPoints ? 0 : 1;
+    pointMat.uniforms.uOpacity.value = toPoints ? 1 : 0;
+    if (!toPoints) particleField = null;
+  }
 }
 
-// Advance to the next pattern (one step per "正体" reveal).
+// Cross-fade into the next pattern, staying head-on (one step per "正体" reveal).
 function advancePattern(): void {
   patternIndex = (patternIndex + 1) % PATTERNS.length;
-  renderPattern(PATTERNS[patternIndex]);
+  applyPattern(PATTERNS[patternIndex], true);
 }
 
 function resize(): void {
@@ -202,7 +234,7 @@ let autoMode = true;
 let nextSwitch = performance.now() + INTERVAL;
 let lastInteract = -1e9;
 let sinceReveal = 0; // random angles shown since the last "正体" reveal
-let leavingReveal = false; // next switch follows a reveal -> re-scatter on the way out
+let pendingMorph = false; // next switch morphs to the next pattern, still at front
 
 // World-space angular velocity (radians/frame) carried over from dragging, so
 // releasing keeps a monotonically-decaying glide (no overshoot, no bounce).
@@ -216,17 +248,20 @@ targetQuat.copy(randomQuat());
 
 // Returns how long to hold this target before switching again (ms).
 function pickTarget(): number {
-  // Leaving a reveal: break the glyph apart with a fresh pattern as it tilts off.
-  if (leavingReveal) {
-    leavingReveal = false;
-    advancePattern();
+  // After the front hold, morph (front→front) into the next pattern, hold the
+  // new one head-on for a beat, and only then resume wandering.
+  if (pendingMorph) {
+    pendingMorph = false;
+    advancePattern(); // cross-fade to the next pattern, staying at the front
+    targetQuat.identity(); // remain readable through the morph + settle
+    return MORPH_DURATION + MORPH_SETTLE;
   }
 
   // Only allow a reveal once enough random angles have passed since the last one.
   if (sinceReveal >= MIN_RANDOM_BETWEEN && Math.random() < REVEAL_CHANCE) {
     targetQuat.identity(); // settle on the readable "正体"
     sinceReveal = 0;
-    leavingReveal = true; // next switch re-scatters
+    pendingMorph = true; // next switch morphs to the next pattern at the front
     return INTERVAL * REVEAL_HOLD_MULT; // linger longer while it's readable
   }
   targetQuat.copy(randomQuat()); // a fully random orientation
@@ -306,6 +341,23 @@ function tick(): void {
     flow += PARTICLE_FLOW_SPEED * dt;
     particleField.update(flow);
     pointMesh.geometry.attributes.position.needsUpdate = true;
+  }
+
+  // Cross-fade the line outline and the dot field during a front→front morph.
+  if (morphActive && lineMesh && pointMesh) {
+    const t = Math.min(1, (now - morphStart) / MORPH_DURATION);
+    const e = t * t * (3 - 2 * t); // smoothstep
+    lineMat.opacity = morphToPoints ? 1 - e : e;
+    pointMat.uniforms.uOpacity.value = morphToPoints ? e : 1 - e;
+    if (t >= 1) {
+      morphActive = false;
+      if (morphToPoints) {
+        lineMesh.visible = false; // fully a dot field now
+      } else {
+        pointMesh.visible = false; // back to lines; stop the dot flow
+        particleField = null;
+      }
+    }
   }
 
   // While dragging, the pointer moves the model directly. Otherwise auto mode

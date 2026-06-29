@@ -36,6 +36,12 @@ export const MIN_RANDOM_BETWEEN = 3;
 /** Dwell at the readable "正体" as a multiple of INTERVAL (2 = stay twice as long). */
 export const REVEAL_HOLD_MULT = 2;
 
+/** Front-to-front cross-fade time when morphing into the next breakup (ms). */
+export const MORPH_DURATION = 1000;
+
+/** Extra still time held at the front after a morph, showing the new pattern (ms). */
+export const MORPH_SETTLE = 500;
+
 /** Particle-pattern dot size (screen px, before devicePixelRatio). */
 export const PARTICLE_SIZE_MIN = 0.9; // base dot size
 export const PARTICLE_SIZE_JITTER = 1.2; // random per-dot size variation (set 0 for uniform)
