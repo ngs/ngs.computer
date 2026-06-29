@@ -21,6 +21,7 @@ import {
   FONT_FAMILY,
   INTERVAL,
   KANJI,
+  MAX_TEXT_LENGTH,
   MIN_RANDOM_BETWEEN,
   MORPH_BURST,
   MORPH_DURATION,
@@ -32,11 +33,21 @@ import {
 } from "./config";
 import type { BBox, Loop } from "./marchingSquares";
 import { extractContours } from "./marchingSquares";
+import { loadRemoteFont } from "./loadFont";
 import type { ParticleField } from "./positions";
 import { buildParticleField, buildPositions } from "./positions";
 import { PATTERNS } from "./patterns";
 import { rasterizeKanji } from "./rasterize";
 import { mountLogo } from "./logo";
+
+// The string to render: `?text=` overrides the default, capped in length.
+function resolveText(): string {
+  const raw = new URLSearchParams(location.search).get("text");
+  if (!raw) return KANJI;
+  const text = Array.from(raw.trim()).slice(0, MAX_TEXT_LENGTH).join("");
+  return text || KANJI;
+}
+const renderText = resolveText();
 
 // Replace the status link's "*" placeholder with the inline SVG logo.
 mountLogo();
@@ -191,14 +202,20 @@ function makeBurstLayer(
 async function buildKanji(): Promise<void> {
   // Make sure the requested web-font glyphs are loaded before rasterizing
   // (otherwise it bakes in whatever fallback font is loaded at that moment).
-  try {
-    await document.fonts.load(`900 380px ${FONT_FAMILY}`, KANJI);
-    await document.fonts.ready;
-  } catch {
-    /* fall back to a system font on failure */
+  // The bundled subset only covers the default text, so custom strings fetch
+  // their glyphs on demand.
+  if (renderText === KANJI) {
+    try {
+      await document.fonts.load(`900 380px ${FONT_FAMILY}`, renderText);
+      await document.fonts.ready;
+    } catch {
+      /* fall back to a system font on failure */
+    }
+  } else {
+    await loadRemoteFont(renderText);
   }
 
-  const img = rasterizeKanji(KANJI);
+  const img = rasterizeKanji(renderText);
   const { loops, bbox } = extractContours(img);
   if (!bbox) return;
   contourLoops = loops;

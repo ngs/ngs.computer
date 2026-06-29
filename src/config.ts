@@ -1,13 +1,16 @@
 // ===== Tuning parameters =====
 
-/** Text to render (use "長瀬" where 瀨 is unavailable). */
+/** Default text to render (use "長瀬" where 瀨 is unavailable). Overridable via the `?text=` query. */
 export const KANJI = "長瀨";
 
 /** Google Fonts family. Pins the typeface so it looks the same everywhere. */
 export const FONT_FAMILY = "'Zen Old Mincho'";
 
-/** Font spec used for rasterization. */
-export const FONT_SPEC = `900 380px ${FONT_FAMILY},"Hiragino Mincho ProN","Yu Mincho",serif`;
+/** Font stack for rasterization (size is chosen per-string to fit the canvas). */
+export const FONT_STACK = `${FONT_FAMILY},"Hiragino Mincho ProN","Yu Mincho",serif`;
+
+/** Max characters honored from the `?text=` query (guards the canvas/contour cost). */
+export const MAX_TEXT_LENGTH = 24;
 
 /** Approximate glyph size in 3D space. */
 export const TARGET_SIZE = 10;
